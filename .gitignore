@@ -1,0 +1,12 @@
+# Secrets and local state - never commit.
+# (Comments must be on their own line; trailing comments break patterns.)
+data/
+config.yaml
+config.vps.yaml
+
+# editor / build noise
+__pycache__/
+*.pyc
+*.swp
+.venv/
+*.html

@@ -1,0 +1,35 @@
+# Copy to config.yaml and edit. (config.yaml is gitignored so your live
+# settings stay local; commit only config.example.yaml.)
+
+record_types: [A, AAAA, CNAME, MX, NS, TXT]
+
+log_path:         data/observations.jsonl
+private_key_path: data/private_key.pem
+public_key_path:  data/public_key.pem
+
+# VANTAGES: each is a viewpoint to collect from. DNS answers can differ by where
+# and how you ask (GeoDNS, CDN geo-steering, censorship), so multiple vantages
+# catch geofenced anomalies — the same name resolving differently across vantages
+# is the signal. Omit this whole section for a single default view.
+vantages:
+  - name: local                 # system default resolver, no ECS
+  - name: google
+    resolver: 8.8.8.8
+  - name: alidns-cn
+    resolver: 223.5.5.5         # a China-based public resolver
+  - name: ecs-cn
+    resolver: 8.8.8.8           # via a resolver that honors EDNS Client Subnet
+    ecs: 1.80.0.0/16            # "answer as if the client were in this CN subnet"
+
+domains:
+  - name: example.com
+  - name: cloudflare.com
+
+  # A CANARY: a domain whose records you expect to be stable. If its observed
+  # value ever drifts from `expected`, `check-canary` warns you — which most
+  # often means YOUR collection was poisoned/tampered, not that the world moved.
+  # Run `collect` once, then pin the value you observed into `expected`.
+  - name: example.com
+    canary: true
+    expected:
+      A: ["REPLACE_WITH_OBSERVED_IP"]
