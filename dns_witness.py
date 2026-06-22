@@ -752,6 +752,79 @@ def cmd_anchor(cfg: dict, args) -> int:
     return 1
 
 
+def cmd_witness(cfg: dict, args) -> int:
+    """
+    Fetch another node's published log + public key, verify it independently, and
+    emit a SIGNED witness statement recording the head you saw and whether it
+    verified. The transparency-log witness/gossip primitive: many independent
+    witnesses make a node's equivocation (showing different histories to different
+    people) detectable -- if two witnesses record different heads for the same
+    node at the same time, someone is lying.
+    """
+    import tempfile
+    import urllib.request
+
+    priv = load_private_key(cfg)
+    base = args.url.rstrip("/")
+
+    def fetch(path):
+        with urllib.request.urlopen(base + path, timeout=30) as r:
+            return r.read()
+
+    try:
+        log_bytes = fetch("/observations.jsonl")
+        pub_bytes = fetch("/public_key.pem")
+    except Exception as e:
+        print(f"fetch failed for {base}: {e}")
+        return 1
+    try:
+        remote_pub = serialization.load_pem_public_key(pub_bytes)
+    except Exception as e:
+        print(f"bad public key from {base}: {e}")
+        return 1
+
+    tmp = Path(tempfile.mkstemp(suffix=".jsonl")[1])
+    try:
+        tmp.write_bytes(log_bytes)
+        results = verify_entries(remote_pub, tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    n = len(results)
+    problems = sum(1 for r in results if r["issues"])
+    verified = n > 0 and problems == 0
+    head = results[-1]["entry"]["entry_hash"] if results else None
+    head_seq = results[-1]["entry"]["seq"] if results else -1
+
+    raw = remote_pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    node_fp = hashlib.sha256(raw).hexdigest()[:16]
+
+    wlog = Path(cfg.get("witness_log_path", "data/witness.jsonl"))
+    wlog.parent.mkdir(parents=True, exist_ok=True)
+    prev_hash, wseq = log_tail(wlog)
+    content = {
+        "seq": wseq,
+        "observed_at": utcnow_iso(),
+        "source": "witness",
+        "node_url": base,
+        "node_key": node_fp,
+        "n_entries": n,
+        "head": head,
+        "head_seq": head_seq,
+        "verified": verified,
+        "prev_hash": prev_hash,
+    }
+    entry = make_signed_entry(content, priv)
+    with open(wlog, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+    status = "VERIFIED" if verified else f"PROBLEMS ({problems})"
+    print(f"witnessed {base}")
+    print(f"  {n} entries, head seq {head_seq} ({(head or 'none')[:16]}...), {status}")
+    print(f"  node key {node_fp} -> signed witness statement appended to {wlog}")
+    return 0 if verified else 1
+
+
 # --------------------------------------------------------------------------- #
 # cli
 # --------------------------------------------------------------------------- #
@@ -772,6 +845,8 @@ def main() -> int:
     sub.add_parser("changes", help="show value/jurisdiction changes per record over time (monitoring)")
     ap = sub.add_parser("anchor", help="anchor the log head to Bitcoin via OpenTimestamps")
     ap.add_argument("--log", help="anchor a specific log file (default: log_path from config)")
+    wp = sub.add_parser("witness", help="fetch + verify another node's log and emit a signed witness statement")
+    wp.add_argument("url", help="base URL of a node serving /observations.jsonl and /public_key.pem")
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -785,6 +860,7 @@ def main() -> int:
         "changes": cmd_changes,
         "ct": cmd_ct,
         "anchor": cmd_anchor,
+        "witness": cmd_witness,
     }[args.cmd](cfg, args)
 
 

@@ -21,6 +21,7 @@ Passive DNS — what domains resolved to, and when — is a core supply-chain an
 - **`check-canary`** — monitor a domain whose true value you know out-of-band; drift means *your* collection was tampered, not that the world moved.
 - **`ct`** — discover a target's certificates and subdomains from **Certificate Transparency** (crt.sh, with a certSpotter fallback) and record newly-seen names in a signed log. A second signal alongside DNS: a new certificate is new infrastructure / attack surface appearing for a watched target.
 - **`anchor`** — anchor the log's head (the tip of the hash chain, which commits to every prior entry) to the **Bitcoin blockchain via OpenTimestamps**, producing a portable proof that the log existed in this exact state at a Bitcoin-confirmed time — verifiable by anyone, independent of the operator.
+- **`witness`** — fetch and independently verify *another* node's published log, then emit a signed witness statement recording the head you saw. Many independent witnesses make a node's equivocation (showing different histories to different observers) detectable — the foundation of a cross-verifying witness network.
 
 ## Integrity model
 
@@ -59,7 +60,7 @@ Schedule `collect` (cron, or the included systemd timer) so history accumulates 
 
 ## Roadmap
 
-- **Distributed observer nodes** that cross-verify each other (the transparency-log *witness* model) — also multi-vantage by construction, so geofencing and log-gaming are caught by the same mechanism.
+- **Witness network** — the `witness` primitive (cross-node verify + signed statement) exists; remaining is statement *exchange* between nodes, a *disagreement comparator* that flags equivocation, and scheduling. Distributed nodes are multi-vantage by construction, so geofencing and log-gaming are caught by the same mechanism.
 - **Forensic per-record timeline** view.
 - **Merkle-tree log** with signed tree heads (efficient inclusion / consistency proofs).
 
