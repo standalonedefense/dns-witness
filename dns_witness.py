@@ -775,7 +775,65 @@ def cmd_anchor(cfg: dict, args) -> int:
     return 0
 
 
-def _render_anchor_html(rows: list) -> str:
+def _anchor_status(proof, has_ots: bool) -> str:
+    """Bitcoin status of an .ots proof; only runs the network 'upgrade' if it's
+    still pending (a confirmed proof never changes, so don't re-fetch it)."""
+    import re
+    import subprocess
+    if not proof.exists():
+        return "proof missing"
+    if not has_ots:
+        return "unknown (no ots)"
+    info = subprocess.run(["ots", "info", str(proof)], capture_output=True, text=True)
+    txt = info.stdout + info.stderr
+    if "BitcoinBlockHeaderAttestation" not in txt and "PendingAttestation" in txt:
+        subprocess.run(["ots", "upgrade", str(proof)], capture_output=True, text=True)  # network, pending only
+        info = subprocess.run(["ots", "info", str(proof)], capture_output=True, text=True)
+        txt = info.stdout + info.stderr
+    if "BitcoinBlockHeaderAttestation" in txt:
+        m = re.search(r"BitcoinBlockHeaderAttestation\((\d+)\)", txt)
+        return f"confirmed (block {m.group(1)})" if m else "confirmed"
+    if "PendingAttestation" in txt:
+        return "pending"
+    return "unknown"
+
+
+def _tier_anchors(records: list) -> list:
+    """
+    Downsample anchor history by age so the table stays bounded as history grows:
+    every anchor in the last 7 days, then one per day to a month, one per week to a
+    quarter, one per month to a year, one per quarter beyond -- recent detail,
+    coarsening with age, like a zoomed-out chart.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    def parse(t):
+        return datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+    kept, seen = [], set()
+    for r in sorted(records, key=lambda x: x.get("observed_at", ""), reverse=True):
+        dt = parse(r["observed_at"])
+        age = (now - dt).days
+        if age <= 7:
+            key = ("raw", r["observed_at"])
+        elif age <= 31:
+            key = ("day", dt.strftime("%Y-%m-%d"))
+        elif age <= 92:
+            iso = dt.isocalendar()
+            key = ("week", f"{iso[0]}-W{iso[1]}")
+        elif age <= 366:
+            key = ("month", dt.strftime("%Y-%m"))
+        else:
+            key = ("quarter", f"{dt.year}-Q{(dt.month - 1) // 3 + 1}")
+        if key not in seen:
+            seen.add(key)
+            kept.append(r)
+    return list(reversed(kept))
+
+
+def _render_anchor_html(rows: list, total: int) -> str:
     def cls(s):
         if s.startswith("confirmed"):
             return "ok"
@@ -808,6 +866,7 @@ def _render_anchor_html(rows: list) -> str:
 </style></head><body>
 <h1>dns-witness &middot; anchor history</h1>
 <p class="sub">Each row Bitcoin-timestamps (via OpenTimestamps) the observation log's head at that moment. <b>pending</b> = submitted, awaiting a Bitcoin confirmation (~hours); <b>confirmed</b> = anchored in a Bitcoin block, independently verifiable. &nbsp;<a href="/">&larr; live report</a></p>
+<p class="sub">Showing {len(rows)} of {total} anchors &mdash; recent ones in full, older ones thinned (daily &rarr; weekly &rarr; monthly &rarr; quarterly) to stay bounded.</p>
 <table>
 <thead><tr><th>anchored at (UTC)</th><th>log head</th><th>seq</th><th>status</th><th>proof</th></tr></thead>
 <tbody>
@@ -829,36 +888,54 @@ def cmd_anchor_report(cfg: dict, args) -> int:
         return 1
     has_ots = bool(shutil.which("ots"))
     base = ahist.parent
+    records = [e for e in read_log(ahist) if e.get("source") == "anchor"]
     rows = []
-    for e in read_log(ahist):
-        if e.get("source") != "anchor":
-            continue
+    for e in _tier_anchors(records):
         proof = base / e["proof"]
-        status = "proof missing"
-        if proof.exists() and has_ots:
-            subprocess.run(["ots", "upgrade", str(proof)], capture_output=True, text=True)
-            info = subprocess.run(["ots", "info", str(proof)], capture_output=True, text=True)
-            txt = info.stdout + info.stderr
-            if "BitcoinBlockHeaderAttestation" in txt:
-                m = re.search(r"BitcoinBlockHeaderAttestation\((\d+)\)", txt)
-                status = f"confirmed (block {m.group(1)})" if m else "confirmed"
-            elif "PendingAttestation" in txt:
-                status = "pending"
-            else:
-                status = "unknown"
-        elif proof.exists():
-            status = "unknown (no ots)"
         rows.append({
             "time": e["observed_at"],
             "head": e["head"],
             "head_seq": e["head_seq"],
             "proof": e["proof"],
-            "status": status,
+            "status": _anchor_status(proof, has_ots),
         })
     out = Path(args.output)
-    out.write_text(_render_anchor_html(rows), encoding="utf-8")
-    print(f"wrote {out}  ({len(rows)} anchors)")
+    out.write_text(_render_anchor_html(rows, len(records)), encoding="utf-8")
+    print(f"wrote {out}  (showing {len(rows)} of {len(records)} anchors)")
     return 0
+
+
+def cmd_status(cfg: dict, args) -> int:
+    """Report the app's footprint on the host (disk free, log sizes, anchor backlog)
+    and warn on thresholds. Dependency-free -- safe on a tiny VPS."""
+    import shutil
+
+    def mb(b):
+        return b / 1024 / 1024
+
+    log_path = Path(cfg["log_path"])
+    where = log_path.parent if log_path.parent.exists() else Path(".")
+    total, used, free = shutil.disk_usage(str(where))
+    print(f"disk @ {where}: {mb(free):.0f} MB free / {mb(total):.0f} MB ({100 * used / total:.0f}% used)")
+
+    for name, p in [
+        ("observations", log_path),
+        ("ct", Path(cfg.get("ct_log_path", "data/ct_observations.jsonl"))),
+        ("witness", Path(cfg.get("witness_log_path", "data/witness.jsonl"))),
+        ("anchors", Path(cfg.get("anchor_log_path") or (where / "anchors.jsonl"))),
+    ]:
+        if p.exists():
+            n = sum(1 for _ in read_log(p))
+            print(f"  {name:12} {mb(p.stat().st_size):8.2f} MB  {n} entries")
+
+    warnings = []
+    if free < 500 * 1024 * 1024:
+        warnings.append(f"LOW DISK: only {mb(free):.0f} MB free")
+    if log_path.exists() and log_path.stat().st_size > 200 * 1024 * 1024:
+        warnings.append("observations log > 200 MB -- consider rotation/archival")
+    for w in warnings:
+        print(f"  !! {w}")
+    return 1 if warnings else 0
 
 
 def cmd_witness(cfg: dict, args) -> int:
@@ -1011,6 +1088,7 @@ def main() -> int:
     ap.add_argument("--log", help="anchor a specific log file (default: log_path from config)")
     arp = sub.add_parser("anchor-report", help="render an HTML table of anchor history + Bitcoin status")
     arp.add_argument("--output", default="anchor-history.html", help="output HTML path")
+    sub.add_parser("status", help="report disk/log footprint and warn on thresholds")
     wp = sub.add_parser("witness", help="fetch + verify another node's log and emit a signed witness statement")
     wp.add_argument("url", help="base URL of a node serving /observations.jsonl and /public_key.pem")
     sub.add_parser("compare", help="compare witness statements and flag node equivocation (forks/rewinds)")
@@ -1030,6 +1108,7 @@ def main() -> int:
         "witness": cmd_witness,
         "compare": cmd_compare,
         "anchor-report": cmd_anchor_report,
+        "status": cmd_status,
     }[args.cmd](cfg, args)
 
 
