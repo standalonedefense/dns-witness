@@ -280,7 +280,10 @@ def verify_entries(pub, log_path: Path) -> list:
     results, prev_hash, expected_seq = [], GENESIS, 0
     for entry in read_log(log_path):
         issues = []
-        content = {k: entry[k] for k in CONTENT_FIELDS}
+        # Sign/verify over every field except the signature envelope itself, so the
+        # log can hold different record shapes (DNS, CT, ...) and still verify
+        # uniformly. Backward compatible with the fixed-schema DNS entries.
+        content = {k: v for k, v in entry.items() if k not in ("entry_hash", "sig")}
         canonical = canonical_json(content)
         if entry["seq"] != expected_seq:
             issues.append("seq out of order")
@@ -299,7 +302,7 @@ def verify_entries(pub, log_path: Path) -> list:
 
 
 def cmd_verify(cfg: dict, args) -> int:
-    log_path = Path(cfg["log_path"])
+    log_path = Path(getattr(args, "log", None) or cfg["log_path"])
     if not log_path.exists():
         print(f"no log at {log_path}")
         return 1
@@ -521,6 +524,128 @@ def cmd_changes(cfg: dict, args) -> int:
     return 1  # nonzero so `changes || alert` works in cron/monitoring
 
 
+def _crtsh_certs(domain: str) -> list:
+    """Certs for <domain> + subdomains from crt.sh, normalized."""
+    import urllib.request
+    import urllib.parse
+
+    url = "https://crt.sh/?" + urllib.parse.urlencode({"q": "%." + domain, "output": "json"})
+    req = urllib.request.Request(url, headers={"User-Agent": "dns-witness-ct/1.0"})
+    err = None
+    for _ in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            out = []
+            for c in data:
+                names = set((c.get("name_value") or "").split("\n"))
+                names.add(c.get("common_name") or "")
+                out.append({
+                    "names": names,
+                    "issuer": c.get("issuer_name") or "",
+                    "not_before": c.get("not_before") or "",
+                    "cert_id": c.get("id"),
+                })
+            return out
+        except Exception as e:
+            err = e
+    print(f"  crt.sh unavailable for {domain}: {err}")
+    return []
+
+
+def _certspotter_certs(domain: str) -> list:
+    """Certs for <domain> + subdomains from SSLMate certSpotter (crt.sh fallback)."""
+    import urllib.request
+    import urllib.parse
+
+    url = "https://api.certspotter.com/v1/issuances?" + urllib.parse.urlencode({
+        "domain": domain,
+        "include_subdomains": "true",
+    }) + "&expand=dns_names&expand=issuer"
+    req = urllib.request.Request(url, headers={"User-Agent": "dns-witness-ct/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        out = []
+        for c in data:
+            iss = c.get("issuer")
+            issuer = iss.get("name", "") if isinstance(iss, dict) else (iss or "")
+            out.append({
+                "names": set(c.get("dns_names") or []),
+                "issuer": issuer,
+                "not_before": c.get("not_before") or "",
+                "cert_id": c.get("id"),
+            })
+        return out
+    except Exception as e:
+        print(f"  certSpotter unavailable for {domain}: {e}")
+        return []
+
+
+def _ct_certs(domain: str) -> list:
+    """CT records for a domain, trying crt.sh then certSpotter."""
+    certs = _crtsh_certs(domain)
+    return certs if certs else _certspotter_certs(domain)
+
+
+def cmd_ct(cfg: dict, args) -> int:
+    """
+    Certificate Transparency discovery collector. For each target domain, pull
+    issued certificates from CT (via crt.sh) and record any newly-seen (sub)domain
+    in a signed, tamper-evident log -- a second signal alongside DNS. A new cert is
+    new infrastructure / attack surface appearing for a watched target.
+    """
+    priv = load_private_key(cfg)
+    ct_log = Path(cfg.get("ct_log_path", "data/ct_observations.jsonl"))
+    ct_log.parent.mkdir(parents=True, exist_ok=True)
+
+    seen = set()
+    if ct_log.exists():
+        for e in read_log(ct_log):
+            seen.add((e.get("target"), e.get("name")))
+
+    prev_hash, seq = log_tail(ct_log)
+    observed_at = utcnow_iso()
+    total_new = 0
+    with open(ct_log, "a", encoding="utf-8") as fh:
+        for d in cfg["domains"]:
+            domain = d["name"]
+            new_here = 0
+            for c in _ct_certs(domain):
+                issuer = c["issuer"]
+                not_before = c["not_before"]
+                cert_id = c["cert_id"]
+                names = set()
+                for n in c["names"]:
+                    n = (n or "").strip().lower().lstrip("*.")
+                    if n and (n == domain or n.endswith("." + domain)):
+                        names.add(n)
+                for name in sorted(names):
+                    if (domain, name) in seen:
+                        continue
+                    seen.add((domain, name))
+                    content = {
+                        "seq": seq,
+                        "observed_at": observed_at,
+                        "source": "ct",
+                        "target": domain,
+                        "name": name,
+                        "issuer": issuer,
+                        "not_before": not_before,
+                        "cert_id": cert_id,
+                        "prev_hash": prev_hash,
+                    }
+                    entry = make_signed_entry(content, priv)
+                    fh.write(json.dumps(entry) + "\n")
+                    prev_hash = entry["entry_hash"]
+                    seq += 1
+                    new_here += 1
+                    total_new += 1
+            print(f"{domain}: {new_here} new name(s) via CT")
+    print(f"appended {total_new} CT observations to {ct_log} (now {seq} total)")
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # cli
 # --------------------------------------------------------------------------- #
@@ -532,7 +657,9 @@ def main() -> int:
     sp = sub.add_parser("keygen", help="generate an Ed25519 signing keypair")
     sp.add_argument("--force", action="store_true", help="overwrite an existing key")
     sub.add_parser("collect", help="resolve configured domains and append signed observations")
-    sub.add_parser("verify", help="verify the log's chain and signatures")
+    vp = sub.add_parser("verify", help="verify a log's chain and signatures")
+    vp.add_argument("--log", help="verify a specific log file (default: log_path from config)")
+    sub.add_parser("ct", help="discover a target's certs/subdomains from Certificate Transparency")
     sub.add_parser("check-canary", help="warn if a canary drifted from expected")
     rp = sub.add_parser("report", help="render a searchable HTML report of the log + chain state")
     rp.add_argument("--output", default="report.html", help="output HTML path (default: report.html)")
@@ -548,6 +675,7 @@ def main() -> int:
         "check-canary": cmd_check_canary,
         "report": cmd_report,
         "changes": cmd_changes,
+        "ct": cmd_ct,
     }[args.cmd](cfg, args)
 
 

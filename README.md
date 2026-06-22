@@ -19,6 +19,7 @@ Passive DNS — what domains resolved to, and when — is a core supply-chain an
 - **`report`** — render a self-contained, searchable HTML report showing the data and the live chain state (non-US country codes highlighted).
 - **`changes`** — show value and **jurisdiction (ASN/country) changes** per record over time; flags when a backend moves country. Exits nonzero when changes are found (cron-friendly).
 - **`check-canary`** — monitor a domain whose true value you know out-of-band; drift means *your* collection was tampered, not that the world moved.
+- **`ct`** — discover a target's certificates and subdomains from **Certificate Transparency** (crt.sh, with a certSpotter fallback) and record newly-seen names in a signed log. A second signal alongside DNS: a new certificate is new infrastructure / attack surface appearing for a watched target.
 
 ## Integrity model
 

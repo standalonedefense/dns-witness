@@ -4,6 +4,7 @@
 record_types: [A, AAAA, CNAME, MX, NS, TXT]
 
 log_path:         data/observations.jsonl
+ct_log_path:      data/ct_observations.jsonl
 private_key_path: data/private_key.pem
 public_key_path:  data/public_key.pem
 
