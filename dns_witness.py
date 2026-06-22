@@ -420,7 +420,7 @@ def _render_html(results: list, pub) -> str:
  .hint{{color:#888;font-size:12px;margin-top:.75rem;max-width:60rem}}
 </style></head><body>
 <h1>dns-witness — verifiable passive DNS</h1>
-<p class="sub">Tamper-evident DNS observations. Each row is signed and hash-chained; the chain state below was re-verified when this page was generated. &middot; <a href="about.html">About &amp; watchlist &rarr;</a></p>
+<p class="sub">Tamper-evident DNS observations. Each row is signed and hash-chained; the chain state below was re-verified when this page was generated. &middot; <a href="about.html">About &amp; watchlist &rarr;</a> &middot; <a href="anchor-history.html">Anchor history &rarr;</a></p>
 <div class="summary">
  <div>Generated: <span class="mono">{utcnow_iso()}</span></div>
  <div>Observations: <b>{n}</b></div>
@@ -730,26 +730,135 @@ def cmd_anchor(cfg: dict, args) -> int:
         print("empty log; nothing to anchor")
         return 1
 
-    head_path = log_path.parent / (log_path.stem + ".head")
-    head_path.write_text(head + "\n", encoding="utf-8")
-
     if not shutil.which("ots"):
         print("ots CLI not found. Install with: pip install opentimestamps-client")
         return 1
+
+    # Keep every anchor's proof (timestamped name) so history accumulates.
+    anchors_dir = log_path.parent / "anchors"
+    anchors_dir.mkdir(parents=True, exist_ok=True)
+    stamp = utcnow_iso().replace(":", "").replace("-", "")
+    head_file = anchors_dir / f"head-{seq}-{stamp}.txt"
+    head_file.write_text(head + "\n", encoding="utf-8")
+
     print(f"anchoring head of {log_path.name} (seq {seq}, {head[:16]}...) via OpenTimestamps")
-    r = subprocess.run(["ots", "stamp", str(head_path)], capture_output=True, text=True)
+    r = subprocess.run(["ots", "stamp", str(head_file)], capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()
     if out:
         print(out)
-    proof = Path(str(head_path) + ".ots")
-    if proof.exists():
-        print(f"wrote {proof}")
-        print("Proof is PENDING until a Bitcoin confirmation (~hours). Complete later with:")
-        print(f"  ots upgrade {proof}")
-        print(f"Then anyone verifies with: ots verify {proof}   (alongside {head_path.name})")
-        return 0
-    print("stamping did not produce a proof; see output above")
-    return 1
+    proof = Path(str(head_file) + ".ots")
+    if not proof.exists():
+        print("stamping did not produce a proof; see output above")
+        return 1
+
+    # Append a signed record to the anchor history (the proofs are the evidence;
+    # this manifest is the index, signed for consistency).
+    priv = load_private_key(cfg)
+    ahist = Path(cfg.get("anchor_log_path") or (log_path.parent / "anchors.jsonl"))
+    prev_hash, aseq = log_tail(ahist)
+    content = {
+        "seq": aseq,
+        "observed_at": utcnow_iso(),
+        "source": "anchor",
+        "log": log_path.name,
+        "head": head,
+        "head_seq": seq,
+        "proof": str(proof.relative_to(log_path.parent)),
+        "prev_hash": prev_hash,
+    }
+    entry = make_signed_entry(content, priv)
+    with open(ahist, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+    print(f"wrote {proof}  and recorded anchor in {ahist} (seq {aseq})")
+    print(f"PENDING until Bitcoin confirms (~hours). Complete later with: ots upgrade {proof}")
+    return 0
+
+
+def _render_anchor_html(rows: list) -> str:
+    def cls(s):
+        if s.startswith("confirmed"):
+            return "ok"
+        return "pend" if s == "pending" else "bad"
+
+    trs = []
+    for r in rows:
+        s = r["status"]
+        trs.append(
+            f'<tr><td class="mono">{html.escape(r["time"])}</td>'
+            f'<td class="mono">{html.escape(r["head"][:24])}…</td>'
+            f'<td>{r["head_seq"]}</td>'
+            f'<td class="{cls(s)}">{html.escape(s)}</td>'
+            f'<td><a href="{html.escape(r["proof"])}">proof</a></td></tr>'
+        )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dns-witness — anchor history</title>
+<style>
+ body{{font:14px/1.5 system-ui,Segoe UI,sans-serif;margin:1.5rem auto;max-width:60rem;color:#1b1f23;background:#fff;padding:0 1rem}}
+ h1{{font-size:1.3rem;margin:0 0 .25rem}}
+ a{{color:#0b66c3}}
+ .sub{{color:#555;margin:0 0 1rem}}
+ table{{border-collapse:collapse;width:100%;font-size:13px}}
+ th,td{{text-align:left;padding:.4rem .55rem;border-bottom:1px solid #eee}}
+ th{{background:#fafafa;border-bottom:1px solid #ccc}}
+ .mono{{font-family:ui-monospace,Consolas,monospace}}
+ td.ok{{color:#137333;font-weight:600}} td.pend{{color:#b06000}} td.bad{{color:#b00020}}
+</style></head><body>
+<h1>dns-witness &middot; anchor history</h1>
+<p class="sub">Each row Bitcoin-timestamps (via OpenTimestamps) the observation log's head at that moment. <b>pending</b> = submitted, awaiting a Bitcoin confirmation (~hours); <b>confirmed</b> = anchored in a Bitcoin block, independently verifiable. &nbsp;<a href="/">&larr; live report</a></p>
+<table>
+<thead><tr><th>anchored at (UTC)</th><th>log head</th><th>seq</th><th>status</th><th>proof</th></tr></thead>
+<tbody>
+{chr(10).join(trs)}
+</tbody></table>
+<p class="sub">Verify any proof yourself with the OpenTimestamps client: <span class="mono">ots verify &lt;proof&gt;</span>. The proof commits the log head to Bitcoin; the head commits to the whole signed chain.</p>
+</body></html>"""
+
+
+def cmd_anchor_report(cfg: dict, args) -> int:
+    """Render an HTML table of anchor history with each proof's Bitcoin status."""
+    import re
+    import shutil
+    import subprocess
+
+    ahist = Path(cfg.get("anchor_log_path") or (Path(cfg["log_path"]).parent / "anchors.jsonl"))
+    if not ahist.exists():
+        print(f"no anchor history at {ahist}")
+        return 1
+    has_ots = bool(shutil.which("ots"))
+    base = ahist.parent
+    rows = []
+    for e in read_log(ahist):
+        if e.get("source") != "anchor":
+            continue
+        proof = base / e["proof"]
+        status = "proof missing"
+        if proof.exists() and has_ots:
+            subprocess.run(["ots", "upgrade", str(proof)], capture_output=True, text=True)
+            info = subprocess.run(["ots", "info", str(proof)], capture_output=True, text=True)
+            txt = info.stdout + info.stderr
+            if "BitcoinBlockHeaderAttestation" in txt:
+                m = re.search(r"BitcoinBlockHeaderAttestation\((\d+)\)", txt)
+                status = f"confirmed (block {m.group(1)})" if m else "confirmed"
+            elif "PendingAttestation" in txt:
+                status = "pending"
+            else:
+                status = "unknown"
+        elif proof.exists():
+            status = "unknown (no ots)"
+        rows.append({
+            "time": e["observed_at"],
+            "head": e["head"],
+            "head_seq": e["head_seq"],
+            "proof": e["proof"],
+            "status": status,
+        })
+    out = Path(args.output)
+    out.write_text(_render_anchor_html(rows), encoding="utf-8")
+    print(f"wrote {out}  ({len(rows)} anchors)")
+    return 0
 
 
 def cmd_witness(cfg: dict, args) -> int:
@@ -900,6 +1009,8 @@ def main() -> int:
     sub.add_parser("changes", help="show value/jurisdiction changes per record over time (monitoring)")
     ap = sub.add_parser("anchor", help="anchor the log head to Bitcoin via OpenTimestamps")
     ap.add_argument("--log", help="anchor a specific log file (default: log_path from config)")
+    arp = sub.add_parser("anchor-report", help="render an HTML table of anchor history + Bitcoin status")
+    arp.add_argument("--output", default="anchor-history.html", help="output HTML path")
     wp = sub.add_parser("witness", help="fetch + verify another node's log and emit a signed witness statement")
     wp.add_argument("url", help="base URL of a node serving /observations.jsonl and /public_key.pem")
     sub.add_parser("compare", help="compare witness statements and flag node equivocation (forks/rewinds)")
@@ -918,6 +1029,7 @@ def main() -> int:
         "anchor": cmd_anchor,
         "witness": cmd_witness,
         "compare": cmd_compare,
+        "anchor-report": cmd_anchor_report,
     }[args.cmd](cfg, args)
 
 
