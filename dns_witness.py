@@ -392,6 +392,7 @@ def _render_html(results: list, pub) -> str:
             html.escape(cc),
             canary,
             html.escape(e.get("vantage") or ""),
+            html.escape(e.get("dnssec") or ""),
         ]
         tds = "".join(f"<td>{c}</td>" for c in cells)
         tds += f'<td class="chain {row_cls}">{chain_cell}</td>'
@@ -429,7 +430,7 @@ def _render_html(results: list, pub) -> str:
 </div>
 <input id="q" placeholder="search — domain, value, ASN, operator, country…" autofocus>
 <table id="t">
-<thead><tr><th>#</th><th>observed (UTC)</th><th>domain</th><th>type</th><th>value</th><th>ASN</th><th>operator</th><th>cc</th><th>canary</th><th>vantage</th><th>chain</th></tr></thead>
+<thead><tr><th>#</th><th>observed (UTC)</th><th>domain</th><th>type</th><th>value</th><th>ASN</th><th>operator</th><th>cc</th><th>canary</th><th>vantage</th><th>dnssec</th><th>chain</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}
 </tbody></table>
