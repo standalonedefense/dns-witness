@@ -1,0 +1,6 @@
+#!/bin/bash
+# Convenience wrapper: run dns_witness with the project's venv (and put the venv
+# on PATH so subprocesses like `ots` are found). Usage: ./dnsw status
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$HERE/.venv/bin:$PATH"
+exec "$HERE/.venv/bin/python" "$HERE/dns_witness.py" "$@"
