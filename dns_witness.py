@@ -825,6 +825,61 @@ def cmd_witness(cfg: dict, args) -> int:
     return 0 if verified else 1
 
 
+def cmd_compare(cfg: dict, args) -> int:
+    """
+    Compare witness statements and flag a node's equivocation. From signed witness
+    statements (each records a node's head + head_seq at a time), two
+    inconsistencies are cleanly detectable without re-fetching the full logs:
+      FORK   - two statements report the SAME head_seq but DIFFERENT heads
+               (the node showed two different histories of the same length)
+      REWIND - head_seq decreases over time (an append-only log cannot shrink)
+    Either means the node -- or a witness -- is lying.
+    """
+    from collections import defaultdict
+
+    wlog = Path(cfg.get("witness_log_path", "data/witness.jsonl"))
+    if not wlog.exists():
+        print(f"no witness log at {wlog}")
+        return 1
+
+    by_node = defaultdict(list)
+    for e in read_log(wlog):
+        if e.get("source") == "witness":
+            by_node[e.get("node_key") or e.get("node_url")].append(e)
+    if not by_node:
+        print("no witness statements found")
+        return 0
+
+    alerts = 0
+    for node, stmts in sorted(by_node.items()):
+        stmts.sort(key=lambda x: x.get("observed_at", ""))
+        seq_heads = defaultdict(set)
+        running_max = None
+        issues = []
+        for s in stmts:
+            hs, h = s.get("head_seq"), s.get("head")
+            if hs is not None and h:
+                seq_heads[hs].add(h)
+            if hs is not None and running_max is not None and hs < running_max:
+                issues.append(f"REWIND: head_seq dropped to {hs} (was {running_max}) at {s.get('observed_at')}")
+            if hs is not None:
+                running_max = hs if running_max is None else max(running_max, hs)
+            if not s.get("verified", True):
+                issues.append(f"UNVERIFIED log observed at {s.get('observed_at')}")
+        for hs, heads in sorted(seq_heads.items()):
+            if len(heads) > 1:
+                issues.append(f"FORK at head_seq {hs}: {len(heads)} different heads -> EQUIVOCATION")
+        if issues:
+            alerts += len(issues)
+            print(f"\n[{node}]  ({len(stmts)} statements)")
+            for i in issues:
+                print(f"  !! {i}")
+        else:
+            print(f"[{node}]  {len(stmts)} statements -- consistent")
+    print(f"\n{alerts} alert(s)")
+    return 1 if alerts else 0
+
+
 # --------------------------------------------------------------------------- #
 # cli
 # --------------------------------------------------------------------------- #
@@ -847,6 +902,7 @@ def main() -> int:
     ap.add_argument("--log", help="anchor a specific log file (default: log_path from config)")
     wp = sub.add_parser("witness", help="fetch + verify another node's log and emit a signed witness statement")
     wp.add_argument("url", help="base URL of a node serving /observations.jsonl and /public_key.pem")
+    sub.add_parser("compare", help="compare witness statements and flag node equivocation (forks/rewinds)")
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -861,6 +917,7 @@ def main() -> int:
         "ct": cmd_ct,
         "anchor": cmd_anchor,
         "witness": cmd_witness,
+        "compare": cmd_compare,
     }[args.cmd](cfg, args)
 
 
