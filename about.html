@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dns-witness — about &amp; watchlist</title>
+<style>
+ body{font:15px/1.55 system-ui,Segoe UI,sans-serif;margin:1.5rem auto;max-width:62rem;color:#1b1f23;background:#fff;padding:0 1rem}
+ h1{font-size:1.45rem;margin:0 0 .25rem}
+ h2{font-size:1.05rem;margin:1.6rem 0 .4rem}
+ a{color:#0b66c3}
+ .lede{color:#444}
+ table{border-collapse:collapse;width:100%;font-size:13px;margin-top:.5rem}
+ th,td{text-align:left;padding:.4rem .55rem;border-bottom:1px solid #eee;vertical-align:top}
+ th{background:#fafafa;border-bottom:1px solid #ccc}
+ tr.grp td{font-weight:700;background:#f4f6f8}
+ .note{color:#666;font-size:12px}
+ code{font-family:ui-monospace,Consolas,monospace;background:#f4f4f4;padding:0 .25rem;border-radius:3px}
+ .disclaim{border:1px solid #e6c200;background:#fffbe6;padding:.6rem .85rem;border-radius:8px;font-size:13px;margin:1rem 0}
+</style></head><body>
+
+<h1>dns-witness &middot; about &amp; watchlist</h1>
+<p class="lede">A verifiable, tamper-evident record of how a set of watched organizations' internet infrastructure behaves over time. &nbsp;<a href="/">&larr; live report</a></p>
+
+<h2>What this records (and what it doesn't)</h2>
+<p>This is <b>not</b> a reputation database for judging unknown domains. It is the opposite: it <b>proactively watches a known list of organizations</b> and records <i>their</i> DNS and certificate infrastructure over time &mdash; where their records resolve, under whose networks (ASN) and in which countries, their DNSSEC validation status, and new subdomains appearing in Certificate Transparency.</p>
+<p>Every observation is cryptographically <b>signed and hash-chained</b>; the log head is <b>anchored to the Bitcoin blockchain</b>; and independent nodes can <b>witness</b> it &mdash; so the history can be <b>independently verified as un-altered and un-backdated</b>. The purpose is <b>change detection and verifiable evidence</b>: noticing when a watched entity's infrastructure shifts (moves jurisdiction, a DNSSEC signature breaks, a new subdomain appears) and being able to <i>prove</i> what was true, and when.</p>
+
+<h2>The watchlist</h2>
+<p class="note">A demonstration hotlist of organizations prominent in current trade- and technology-competition discourse, monitored <b>symmetrically</b> &mdash; entities designated by both sides &mdash; to keep the lens neutral.</p>
+
+<div class="disclaim"><b>About the "designation" column:</b> these are <b>publicly-reported official designations</b>, listed for reference only &mdash; verify against primary sources before relying on them. A listing reflects a <i>government's action</i>, not any assessment by this project, and designations change frequently.</div>
+
+<table>
+<thead><tr><th>Domain</th><th>Organization</th><th>Country</th><th>Designation (publicly reported)</th><th>By</th></tr></thead>
+<tbody>
+<tr class="grp"><td colspan="5">China entities designated by the United States</td></tr>
+<tr><td>huawei.com</td><td>Huawei</td><td>China</td><td>FCC Covered List; BIS Entity List</td><td>FCC; US Commerce (BIS)</td></tr>
+<tr><td>zte.com.cn</td><td>ZTE</td><td>China</td><td>FCC Covered List; BIS Entity List</td><td>FCC; US Commerce (BIS)</td></tr>
+<tr><td>smics.com</td><td>SMIC</td><td>China</td><td>BIS Entity List; DoD 1260H</td><td>US Commerce (BIS); US DoD</td></tr>
+<tr><td>dji.com</td><td>DJI</td><td>China</td><td>DoD 1260H; FCC Covered List; Treasury NS-CMIC</td><td>US DoD; FCC; US Treasury (OFAC)</td></tr>
+<tr><td>catl.com</td><td>CATL</td><td>China</td><td>DoD 1260H (Jan 2025)</td><td>US DoD</td></tr>
+<tr class="grp"><td colspan="5">US entities designated by China</td></tr>
+<tr><td>mpmaterials.com</td><td>MP Materials</td><td>USA</td><td>MOFCOM export-control list (Jun 2026)</td><td>China MOFCOM</td></tr>
+<tr><td>micron.com</td><td>Micron</td><td>USA</td><td>Barred from critical information infrastructure (2023 review)</td><td>China CAC</td></tr>
+<tr><td>lockheedmartin.com</td><td>Lockheed Martin</td><td>USA</td><td>Sanctions over Taiwan arms sales</td><td>China MOFCOM / MFA</td></tr>
+<tr><td>anduril.com</td><td>Anduril</td><td>USA</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>intel.com</td><td>Intel</td><td>USA</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr class="grp"><td colspan="5">Strategically contested (not formally designated unless noted)</td></tr>
+<tr><td>asml.com</td><td>ASML</td><td>Netherlands</td><td>Advanced-tool exports to China restricted (export controls, not an entity list)</td><td>Netherlands; US</td></tr>
+<tr><td>tsmc.com</td><td>TSMC</td><td>Taiwan</td><td>&mdash; (strategically central)</td><td>&mdash;</td></tr>
+<tr><td>arm.com</td><td>Arm</td><td>UK</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>kaspersky.com</td><td>Kaspersky</td><td>Russia</td><td>BIS ICTS prohibition (2024); BIS Entity List; OFAC (executives)</td><td>US Commerce (BIS); US Treasury (OFAC)</td></tr>
+<tr><td>thalesgroup.com</td><td>Thales</td><td>France</td><td>&mdash;</td><td>&mdash;</td></tr>
+</tbody>
+</table>
+
+<h2>The signals</h2>
+<ul>
+<li><b>ASN / country</b> &mdash; whose network and which jurisdiction an IP sits in; a shift is a key signal.</li>
+<li><b>DNSSEC</b> &mdash; <code>secure</code> / <code>insecure</code> / <code>bogus</code>; a signed domain dropping to <code>bogus</code> alongside an IP change is a high-confidence hijack indicator.</li>
+<li><b>Vantage</b> &mdash; the same name resolved from different viewpoints (resolver / EDNS Client Subnet); disagreement across vantages reveals geofencing.</li>
+<li><b>CT</b> &mdash; new certificates in Certificate Transparency reveal new subdomains / infrastructure as they appear.</li>
+</ul>
+
+<p class="note">Don't trust this page &mdash; verify it. The signed log is at <a href="/observations.jsonl">/observations.jsonl</a>, the public key at <a href="/public_key.pem">/public_key.pem</a>. Source: <a href="https://github.com/standalonedefense/dns-witness">github.com/standalonedefense/dns-witness</a>.</p>
+
+</body></html>

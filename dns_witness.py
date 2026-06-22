@@ -420,7 +420,7 @@ def _render_html(results: list, pub) -> str:
  .hint{{color:#888;font-size:12px;margin-top:.75rem;max-width:60rem}}
 </style></head><body>
 <h1>dns-witness — verifiable passive DNS</h1>
-<p class="sub">Tamper-evident DNS observations. Each row is signed and hash-chained; the chain state below was re-verified when this page was generated.</p>
+<p class="sub">Tamper-evident DNS observations. Each row is signed and hash-chained; the chain state below was re-verified when this page was generated. &middot; <a href="about.html">About &amp; watchlist &rarr;</a></p>
 <div class="summary">
  <div>Generated: <span class="mono">{utcnow_iso()}</span></div>
  <div>Observations: <b>{n}</b></div>

@@ -9,4 +9,5 @@ __pycache__/
 *.pyc
 *.swp
 .venv/
-*.html
+report.html
+index.html
