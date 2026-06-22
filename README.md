@@ -14,10 +14,10 @@ Passive DNS — what domains resolved to, and when — is a core supply-chain an
 
 ## What it does
 
-- **`collect`** — resolve configured domains (A / AAAA / CNAME / MX / NS / TXT) across one or more vantages; enrich IPs with ASN / operator / country (via Team Cymru); append each observation to a signed, hash-chained log.
+- **`collect`** — resolve configured domains (A / AAAA / CNAME / MX / NS / TXT) across one or more vantages; enrich IPs with ASN / operator / country (via Team Cymru) and capture each domain's DNSSEC validation status (`secure` / `insecure` / `bogus`); append each observation to a signed, hash-chained log.
 - **`verify`** — re-check the whole log: chain intact, in order, every signature valid. Exits nonzero on any tampering.
 - **`report`** — render a self-contained, searchable HTML report showing the data and the live chain state (non-US country codes highlighted).
-- **`changes`** — show value and **jurisdiction (ASN/country) changes** per record over time; flags when a backend moves country. Exits nonzero when changes are found (cron-friendly).
+- **`changes`** — show value, **jurisdiction (ASN/country)**, and **DNSSEC status** changes per record over time. Flags backend country moves, and the high-confidence hijack pattern — an IP change coinciding with DNSSEC validation dropping from `secure` to `bogus`/`insecure` (an attacker who hijacks a live DNS provider usually can't forge the manufacturer's offline DNSSEC keys). Exits nonzero when changes are found (cron-friendly).
 - **`check-canary`** — monitor a domain whose true value you know out-of-band; drift means *your* collection was tampered, not that the world moved.
 - **`ct`** — discover a target's certificates and subdomains from **Certificate Transparency** (crt.sh, with a certSpotter fallback) and record newly-seen names in a signed log. A second signal alongside DNS: a new certificate is new infrastructure / attack surface appearing for a watched target.
 

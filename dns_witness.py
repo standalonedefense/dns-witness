@@ -38,6 +38,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import dns.edns
+import dns.flags
+import dns.message
+import dns.name
+import dns.query
+import dns.rcode
+import dns.rdatatype
 import dns.resolver
 import yaml
 from cryptography.exceptions import InvalidSignature
@@ -186,6 +192,39 @@ def asn_lookup(ip: str) -> tuple:
         return (None, None, None)
 
 
+def dnssec_status(domain: str, resolver_ip: str = "8.8.8.8") -> str:
+    """
+    DNSSEC validation status of <domain> as seen through a validating resolver:
+      secure   - chain validated (AD flag set)
+      insecure - zone is unsigned
+      bogus    - data exists but FAILS validation (the hijack/tamper signal)
+      servfail - resolver failure for another reason
+      error    - query error
+    Bogus is confirmed by re-asking with Checking Disabled: if the data appears
+    only when validation is turned off, the SERVFAIL was a DNSSEC failure.
+    """
+    try:
+        qname = dns.name.from_text(domain)
+        q = dns.message.make_query(qname, dns.rdatatype.A, want_dnssec=True)
+        q.flags |= dns.flags.AD
+        resp = dns.query.udp(q, resolver_ip, timeout=5)
+        if resp.flags & dns.flags.TC:
+            resp = dns.query.tcp(q, resolver_ip, timeout=5)
+        rc = resp.rcode()
+        if rc == dns.rcode.SERVFAIL:
+            q2 = dns.message.make_query(qname, dns.rdatatype.A, want_dnssec=True)
+            q2.flags |= dns.flags.CD
+            resp2 = dns.query.udp(q2, resolver_ip, timeout=5)
+            if resp2.rcode() == dns.rcode.NOERROR and resp2.answer:
+                return "bogus"
+            return "servfail"
+        if rc == dns.rcode.NOERROR:
+            return "secure" if (resp.flags & dns.flags.AD) else "insecure"
+        return dns.rcode.to_text(rc).lower()
+    except Exception:
+        return "error"
+
+
 # --------------------------------------------------------------------------- #
 # the signed, hash-chained log
 # --------------------------------------------------------------------------- #
@@ -233,6 +272,7 @@ def cmd_collect(cfg: dict, args) -> int:
             for d in cfg["domains"]:
                 domain = d["name"]
                 is_canary = bool(d.get("canary", False))
+                dsec = dnssec_status(domain, v.get("resolver") or "8.8.8.8")
                 for rtype in record_types:
                     for value in resolve(resolver, domain, rtype):
                         asn = as_org = country = None
@@ -250,6 +290,7 @@ def cmd_collect(cfg: dict, args) -> int:
                             "source": "self-collected",
                             "is_canary": is_canary,
                             "vantage": vname,
+                            "dnssec": dsec,
                             "prev_hash": prev_hash,
                         }
                         entry = make_signed_entry(content, priv)
@@ -467,15 +508,19 @@ def detect_changes(log_path: Path) -> list:
     from collections import defaultdict
 
     timeline = defaultdict(dict)  # (domain, rtype, vantage) -> {observed_at: {value: (asn, country)}}
+    dsec = defaultdict(dict)      # same key -> {observed_at: dnssec status}
     for e in read_log(log_path):
         key = (e["domain"], e["record_type"], e.get("vantage", "default"))
         timeline[key].setdefault(e["observed_at"], {})[e["value"]] = (e.get("asn"), e.get("country"))
+        if e.get("dnssec") is not None:
+            dsec[key][e["observed_at"]] = e.get("dnssec")
 
     changes = []
     for key, runs in sorted(timeline.items()):
-        prev_ts = prev = None
+        prev_ts = prev = prev_dsec = None
         for ts in sorted(runs):
             cur = runs[ts]
+            cur_dsec = dsec.get(key, {}).get(ts)
             if prev is not None:
                 added = sorted(set(cur) - set(prev))
                 removed = sorted(set(prev) - set(cur))
@@ -484,7 +529,10 @@ def detect_changes(log_path: Path) -> list:
                     for v in sorted(set(cur) & set(prev))
                     if cur[v] != prev[v]
                 ]
-                if added or removed or shifts:
+                dnssec_change = None
+                if cur_dsec is not None and prev_dsec is not None and cur_dsec != prev_dsec:
+                    dnssec_change = {"from": prev_dsec, "to": cur_dsec}
+                if added or removed or shifts or dnssec_change:
                     changes.append({
                         "domain": key[0],
                         "record_type": key[1],
@@ -494,8 +542,9 @@ def detect_changes(log_path: Path) -> list:
                         "added": [{"value": v, "asn": cur[v][0], "country": cur[v][1]} for v in added],
                         "removed": removed,
                         "shifts": shifts,
+                        "dnssec_change": dnssec_change,
                     })
-            prev_ts, prev = ts, cur
+            prev_ts, prev, prev_dsec = ts, cur, cur_dsec
     return changes
 
 
@@ -520,6 +569,17 @@ def cmd_changes(cfg: dict, args) -> int:
             t_asn, t_cc = s["to"]
             flag = "   <== JURISDICTION CHANGE" if f_cc != t_cc else ""
             print(f"  ~ {s['value']}  AS{f_asn} {f_cc} -> AS{t_asn} {t_cc}{flag}")
+        dc = c.get("dnssec_change")
+        if dc:
+            broke = dc["from"] == "secure" and dc["to"] in ("bogus", "insecure")
+            with_ip = bool(c["added"] or c["shifts"])
+            if broke and with_ip:
+                flag = "   <== DNSSEC BREAK + IP CHANGE (high-confidence hijack)"
+            elif broke:
+                flag = "   <== DNSSEC BREAK"
+            else:
+                flag = ""
+            print(f"  ! dnssec {dc['from']} -> {dc['to']}{flag}")
     print(f"\n{len(changes)} change event(s) across {n_runs} runs")
     return 1  # nonzero so `changes || alert` works in cron/monitoring
 
