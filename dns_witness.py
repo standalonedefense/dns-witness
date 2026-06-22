@@ -707,6 +707,51 @@ def cmd_ct(cfg: dict, args) -> int:
     return 0
 
 
+def cmd_anchor(cfg: dict, args) -> int:
+    """
+    Anchor the log's current head (the tip of the hash chain, which transitively
+    commits to every prior entry) to the Bitcoin blockchain via OpenTimestamps.
+    Produces a portable .ots proof: anyone can later verify the log existed in
+    this exact state at a Bitcoin-confirmed time -- independent of this operator.
+    The proof is 'pending' until a Bitcoin confirmation (~hours); complete it
+    later with `ots upgrade`.
+    """
+    import shutil
+    import subprocess
+
+    log_path = Path(getattr(args, "log", None) or cfg["log_path"])
+    if not log_path.exists():
+        print(f"no log at {log_path}")
+        return 1
+    head, seq = None, -1
+    for e in read_log(log_path):
+        head, seq = e["entry_hash"], e["seq"]
+    if head is None:
+        print("empty log; nothing to anchor")
+        return 1
+
+    head_path = log_path.parent / (log_path.stem + ".head")
+    head_path.write_text(head + "\n", encoding="utf-8")
+
+    if not shutil.which("ots"):
+        print("ots CLI not found. Install with: pip install opentimestamps-client")
+        return 1
+    print(f"anchoring head of {log_path.name} (seq {seq}, {head[:16]}...) via OpenTimestamps")
+    r = subprocess.run(["ots", "stamp", str(head_path)], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if out:
+        print(out)
+    proof = Path(str(head_path) + ".ots")
+    if proof.exists():
+        print(f"wrote {proof}")
+        print("Proof is PENDING until a Bitcoin confirmation (~hours). Complete later with:")
+        print(f"  ots upgrade {proof}")
+        print(f"Then anyone verifies with: ots verify {proof}   (alongside {head_path.name})")
+        return 0
+    print("stamping did not produce a proof; see output above")
+    return 1
+
+
 # --------------------------------------------------------------------------- #
 # cli
 # --------------------------------------------------------------------------- #
@@ -725,6 +770,8 @@ def main() -> int:
     rp = sub.add_parser("report", help="render a searchable HTML report of the log + chain state")
     rp.add_argument("--output", default="report.html", help="output HTML path (default: report.html)")
     sub.add_parser("changes", help="show value/jurisdiction changes per record over time (monitoring)")
+    ap = sub.add_parser("anchor", help="anchor the log head to Bitcoin via OpenTimestamps")
+    ap.add_argument("--log", help="anchor a specific log file (default: log_path from config)")
 
     args = p.parse_args()
     cfg = load_config(args.config)
@@ -737,6 +784,7 @@ def main() -> int:
         "report": cmd_report,
         "changes": cmd_changes,
         "ct": cmd_ct,
+        "anchor": cmd_anchor,
     }[args.cmd](cfg, args)
 
 

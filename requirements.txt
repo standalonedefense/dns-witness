@@ -1,3 +1,4 @@
 dnspython>=2.4
 cryptography>=42
 PyYAML>=6
+opentimestamps-client>=0.7
